@@ -4,6 +4,11 @@ import { registerPetIpc } from './ipc/petIpc'
 
 const controller = new PetController()
 
+// Dev diagnostics: allow Chrome DevTools Protocol inspection of the pet window.
+if (!app.isPackaged) {
+  app.commandLine.appendSwitch('remote-debugging-port', '9223')
+}
+
 // Single-instance lock so tray + pet stay unique.
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
@@ -21,6 +26,10 @@ if (!gotLock) {
 
     registerPetIpc(controller)
     controller.start()
+    console.log('[CapyB] started', {
+      packaged: app.isPackaged,
+      userData: app.getPath('userData')
+    })
   })
 
   app.on('activate', () => {

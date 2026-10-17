@@ -1,12 +1,14 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import {
   IpcChannels,
+  type DebugBehaviourCommand,
   type NudgeResult,
   type PerfSnapshot,
   type PetApi,
   type WindowMetrics
 } from '../shared/ipc'
 import type { AppSettings, PetRuntimeState } from '../shared/settings'
+import type { DialogueEvent, DialogueResponse } from '../shared/dialogue'
 
 const petApi: PetApi = {
   setIgnoreMouseEvents: (ignore: boolean) => {
@@ -30,6 +32,16 @@ const petApi: PetApi = {
 
   updateSettings: (patch) =>
     ipcRenderer.invoke(IpcChannels.UPDATE_SETTINGS, patch) as Promise<AppSettings>,
+
+  onSettingsChanged: (handler) => {
+    const listener = (_event: IpcRendererEvent, settings: AppSettings): void => {
+      handler(settings)
+    }
+    ipcRenderer.on(IpcChannels.SETTINGS_CHANGED, listener)
+    return () => {
+      ipcRenderer.removeListener(IpcChannels.SETTINGS_CHANGED, listener)
+    }
+  },
 
   openMainApp: () => {
     ipcRenderer.send(IpcChannels.OPEN_MAIN_APP)
@@ -62,6 +74,34 @@ const petApi: PetApi = {
 
   flushWindowPosition: () => {
     ipcRenderer.send(IpcChannels.FLUSH_WINDOW_POSITION)
+  },
+
+  onDialogue: (handler) => {
+    const listener = (_event: IpcRendererEvent, dialogue: DialogueEvent): void => {
+      handler(dialogue)
+    }
+    ipcRenderer.on(IpcChannels.DIALOGUE_SHOW, listener)
+    return () => {
+      ipcRenderer.removeListener(IpcChannels.DIALOGUE_SHOW, listener)
+    }
+  },
+
+  respondDialogue: (response: DialogueResponse) => {
+    ipcRenderer.send(IpcChannels.DIALOGUE_RESPOND, response)
+  },
+
+  dismissDialogue: (dialogueId: string) => {
+    ipcRenderer.send(IpcChannels.DIALOGUE_DISMISS, dialogueId)
+  },
+
+  onDebugBehaviour: (handler) => {
+    const listener = (_event: IpcRendererEvent, command: DebugBehaviourCommand): void => {
+      handler(command)
+    }
+    ipcRenderer.on(IpcChannels.DEBUG_BEHAVIOUR, listener)
+    return () => {
+      ipcRenderer.removeListener(IpcChannels.DEBUG_BEHAVIOUR, listener)
+    }
   }
 }
 

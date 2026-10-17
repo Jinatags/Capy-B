@@ -1,10 +1,13 @@
 import {
+  Component,
   useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
-  type JSX
+  type ErrorInfo,
+  type JSX,
+  type ReactNode
 } from 'react'
 import { Center, useGLTF } from '@react-three/drei'
 import { useFrame, useThree, type ThreeEvent } from '@react-three/fiber'
@@ -22,13 +25,52 @@ import {
 import { CharacterStateMachine } from '../behaviour/stateMachine'
 import { computeMotionPose } from '../behaviour/motion'
 import { isCapyDebug } from '../debug'
+import type { MoodRequest } from '../mood'
 
 const DRAG_THRESHOLD_PX = 7
+const STATIC_MODEL: ResolvedCapyModel = { url: FALLBACK_MODEL_URL, kind: 'static' }
 
 type CapyModelProps = {
   onPetClick: () => void
   interactive?: boolean
   runtime: PetRuntimeState
+  moodRequest?: MoodRequest | null
+}
+
+type LoadErrorBoundaryProps = {
+  onError: () => void
+  children: ReactNode
+}
+
+type LoadErrorBoundaryState = { hasError: boolean }
+
+/** Catches GLTF parse/load failures so we can fall back to the static mesh. */
+class ModelLoadErrorBoundary extends Component<
+  LoadErrorBoundaryProps,
+  LoadErrorBoundaryState
+> {
+  state: LoadErrorBoundaryState = { hasError: false }
+  private notified = false
+
+  static getDerivedStateFromError(): LoadErrorBoundaryState {
+    return { hasError: true }
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo): void {
+    if (import.meta.env.DEV || isCapyDebug()) {
+      console.warn('[CapyB] Model load failed — using static fallback', error, info.componentStack)
+    }
+    if (!this.notified) {
+      this.notified = true
+      this.props.onError()
+    }
+  }
+
+  render(): ReactNode {
+    // Parent remounts this boundary with a new key after onError; avoid a permanent blank frame.
+    if (this.state.hasError) return null
+    return this.props.children
+  }
 }
 
 function sceneHasSkeleton(root: THREE.Object3D): boolean {
@@ -70,46 +112,78 @@ function prepareMaterials(scene: THREE.Object3D): void {
 
 /**
  * Resolves animated vs static model URL, then mounts the character.
- * Avoids loading both GLBs unless the animated candidate is invalid.
+ * Starts on the static extract immediately so a bad animated probe cannot blank the pet.
  */
-export function CapyModel(props: CapyModelProps): JSX.Element | null {
-  const [resolved, setResolved] = useState<ResolvedCapyModel | null>(null)
+export function CapyModel({
+  moodRequest = null,
+  ...props
+}: CapyModelProps): JSX.Element {
+  const [resolved, setResolved] = useState<ResolvedCapyModel>(STATIC_MODEL)
   const [forcedFallback, setForcedFallback] = useState(false)
+  const [loadGeneration, setLoadGeneration] = useState(0)
 
   useEffect(() => {
     let cancelled = false
-    void resolveCapyModelUrl().then((next) => {
-      if (cancelled) return
-      // Preload only the chosen URL so we do not fetch both GLBs.
-      useGLTF.preload(next.url)
-      setResolved(next)
-    })
+    // Always have the known-good static mesh ready.
+    useGLTF.preload(FALLBACK_MODEL_URL)
+    void resolveCapyModelUrl()
+      .then((next) => {
+        if (cancelled) return
+        if (import.meta.env.DEV || isCapyDebug()) {
+          console.info('[CapyB] Resolved model', next)
+        }
+        if (next.kind === 'animated') {
+          useGLTF.preload(next.url)
+        }
+        setResolved(next)
+      })
+      .catch((error) => {
+        console.warn('[CapyB] Model resolve failed; keeping static fallback', error)
+        if (!cancelled) {
+          setForcedFallback(true)
+          setResolved(STATIC_MODEL)
+          setLoadGeneration((g) => g + 1)
+        }
+      })
     return () => {
       cancelled = true
     }
   }, [])
 
-  if (!resolved) return null
+  const model: ResolvedCapyModel = forcedFallback ? STATIC_MODEL : resolved
 
-  const model: ResolvedCapyModel = forcedFallback
-    ? { url: FALLBACK_MODEL_URL, kind: 'static' }
-    : resolved
+  const forceStaticFallback = (): void => {
+    if (import.meta.env.DEV || isCapyDebug()) {
+      console.warn(
+        `[CapyB] Falling back to ${FALLBACK_MODEL_URL} (animated candidate missing/invalid)`
+      )
+    }
+    useGLTF.preload(FALLBACK_MODEL_URL)
+    setForcedFallback(true)
+    setResolved(STATIC_MODEL)
+    // Bump key even when URL was already static so the error boundary remounts.
+    setLoadGeneration((g) => g + 1)
+  }
 
   return (
-    <CapyModelLoaded
-      key={model.url}
-      {...props}
-      model={model}
-      onAnimatedInvalid={() => {
-        if (import.meta.env.DEV || isCapyDebug()) {
-          console.warn(
-            `[CapyB] ${ANIMATED_MODEL_URL} is present but has no skeleton/clips — falling back to ${FALLBACK_MODEL_URL}`
-          )
-        }
-        useGLTF.preload(FALLBACK_MODEL_URL)
-        setForcedFallback(true)
-      }}
-    />
+    <ModelLoadErrorBoundary
+      key={`${model.url}#${loadGeneration}`}
+      onError={forceStaticFallback}
+    >
+      <CapyModelLoaded
+        {...props}
+        moodRequest={moodRequest}
+        model={model}
+        onAnimatedInvalid={() => {
+          if (import.meta.env.DEV || isCapyDebug()) {
+            console.warn(
+              `[CapyB] ${ANIMATED_MODEL_URL} has no skeleton/clips — falling back to ${FALLBACK_MODEL_URL}`
+            )
+          }
+          forceStaticFallback()
+        }}
+      />
+    </ModelLoadErrorBoundary>
   )
 }
 
@@ -126,7 +200,8 @@ function CapyModelLoaded({
   interactive = true,
   runtime,
   model,
-  onAnimatedInvalid
+  onAnimatedInvalid,
+  moodRequest = null
 }: LoadedProps): JSX.Element {
   const gltf = useGLTF(model.url)
   const { scene, animations } = gltf
@@ -169,8 +244,28 @@ function CapyModelLoaded({
 
   useLayoutEffect(() => {
     prepareMaterials(scene)
+    let meshCount = 0
+    scene.traverse((obj) => {
+      if ((obj as THREE.Mesh).isMesh) meshCount += 1
+    })
+    if (import.meta.env.DEV || isCapyDebug()) {
+      console.info('[CapyB] GLB ready', {
+        url: model.url,
+        kind: model.kind,
+        meshCount,
+        animations: animations.length,
+        heightScale
+      })
+    }
     invalidate()
-  }, [scene, invalidate])
+    // Demand-loop: ensure a few redraws after Suspense resolves.
+    const t1 = window.setTimeout(() => invalidate(), 50)
+    const t2 = window.setTimeout(() => invalidate(), 200)
+    return () => {
+      window.clearTimeout(t1)
+      window.clearTimeout(t2)
+    }
+  }, [scene, animations, invalidate, model.url, model.kind, heightScale])
 
   // Validate animated candidate once; fall back without keeping a broken asset.
   useEffect(() => {
@@ -225,6 +320,25 @@ function CapyModelLoaded({
   useEffect(() => {
     animRef.current?.setPaused(runtime.paused || !runtime.visible)
   }, [runtime.paused, runtime.visible])
+
+  useEffect(() => {
+    if (!moodRequest) return
+    machineRef.current?.applyMood(moodRequest.mood)
+    invalidate()
+  }, [moodRequest, invalidate])
+
+  // Dev tray: Test Sleep / Test Wake → existing FSM (no schedule/settings changes).
+  useEffect(() => {
+    const unsubscribe = window.pet?.onDebugBehaviour((command) => {
+      if (command === 'sleep') {
+        machineRef.current?.beginSleep()
+      } else if (command === 'wake') {
+        machineRef.current?.beginWake()
+      }
+      invalidate()
+    })
+    return () => unsubscribe?.()
+  }, [invalidate])
 
   useFrame((state, delta) => {
     const machine = machineRef.current
@@ -359,7 +473,6 @@ function CapyModelLoaded({
     }
 
     if (wasClickCandidate && down && interactive && !runtime.paused) {
-      machineRef.current?.beginHappy(1.6)
       onPetClick()
     }
   }

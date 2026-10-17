@@ -11,6 +11,7 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "test": "node --test scripts/reminders.test.mjs scripts/dialogue.test.mjs",
     "pack:mac": "npm run build && electron-builder --mac --config electron-builder.yml",
     "dist:mac": "npm run pack:mac",
     "postinstall": "electron-builder install-app-deps"

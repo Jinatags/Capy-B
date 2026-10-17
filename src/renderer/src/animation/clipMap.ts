@@ -10,7 +10,8 @@ const CLIP_ALIASES: Record<CharacterState, readonly string[]> = {
   waking: [ANIMATION_CLIP_NAMES.waking, 'wake', 'WakeUp', 'Yawn', 'Stretch'],
   dragging: [ANIMATION_CLIP_NAMES.dragging, 'pickedup', 'pickUp', 'PickUp', 'Held', 'Lift'],
   happy: [ANIMATION_CLIP_NAMES.happy, 'Happy', 'Joy', 'Bounce'],
-  sad: [ANIMATION_CLIP_NAMES.sad, 'Sad', 'Pout', 'Down']
+  sad: [ANIMATION_CLIP_NAMES.sad, 'Sad', 'Pout', 'Down'],
+  annoyed: [ANIMATION_CLIP_NAMES.annoyed, 'Annoyed', 'Hmph', 'Grumpy']
 }
 
 function normalize(name: string): string {

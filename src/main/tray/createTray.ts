@@ -8,10 +8,14 @@ export type TrayActions = {
   onShowHide: () => void
   onPauseResume: () => void
   onToggleWalking: () => void
+  onToggleReminders: () => void
   onSetPetSize: (size: PetSizeId) => void
   onOpenMainApp: () => void
   onOpenSettings: () => void
   onQuit: () => void
+  /** Present only when the host registers them (development builds). */
+  onTestSleep?: () => void
+  onTestWake?: () => void
 }
 
 type RefreshableTray = Tray & {
@@ -45,7 +49,8 @@ function resolveTrayIcon(): Electron.NativeImage {
 
 function buildMenu(actions: TrayActions): Menu {
   const settings = actions.getSettings()
-  return Menu.buildFromTemplate([
+  const isDev = !app.isPackaged
+  const template: Electron.MenuItemConstructorOptions[] = [
     {
       label: settings.petVisible ? 'Hide Capy B' : 'Show Capy B',
       click: () => actions.onShowHide()
@@ -57,6 +62,10 @@ function buildMenu(actions: TrayActions): Menu {
     {
       label: settings.enableWalking ? 'Disable Walking' : 'Enable Walking',
       click: () => actions.onToggleWalking()
+    },
+    {
+      label: settings.enableReminders ? 'Disable Reminders' : 'Enable Reminders',
+      click: () => actions.onToggleReminders()
     },
     {
       label: 'Character Size',
@@ -75,13 +84,37 @@ function buildMenu(actions: TrayActions): Menu {
     {
       label: 'Settings…',
       click: () => actions.onOpenSettings()
-    },
+    }
+  ]
+
+  if (isDev && actions.onTestSleep && actions.onTestWake) {
+    template.push(
+      { type: 'separator' },
+      {
+        label: 'Developer',
+        submenu: [
+          {
+            label: 'Test Sleep',
+            click: () => actions.onTestSleep?.()
+          },
+          {
+            label: 'Test Wake',
+            click: () => actions.onTestWake?.()
+          }
+        ]
+      }
+    )
+  }
+
+  template.push(
     { type: 'separator' },
     {
       label: 'Quit Capy B',
       click: () => actions.onQuit()
     }
-  ])
+  )
+
+  return Menu.buildFromTemplate(template)
 }
 
 export function createAppTray(actions: TrayActions): Tray {

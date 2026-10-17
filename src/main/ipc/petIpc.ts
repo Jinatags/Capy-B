@@ -1,6 +1,7 @@
 import { app, ipcMain } from 'electron'
 import { IpcChannels, type PerfSnapshot } from '../../shared/ipc'
 import type { AppSettings } from '../../shared/settings'
+import type { DialogueResponse } from '../../shared/dialogue'
 import type { PetController } from '../app/petController'
 import { clampPositionToWorkArea } from '../windows/workArea'
 import { defaultPetWindowSize } from '../windows/petWindow'
@@ -41,7 +42,7 @@ export function registerPetIpc(controller: PetController): void {
   })
 
   ipcMain.on(IpcChannels.OPEN_SETTINGS, () => {
-    controller.openSettingsPlaceholder()
+    controller.openSettings()
   })
 
   ipcMain.on(IpcChannels.REPORT_PERF, (_event, snapshot: unknown) => {
@@ -103,5 +104,26 @@ export function registerPetIpc(controller: PetController): void {
 
   ipcMain.on(IpcChannels.FLUSH_WINDOW_POSITION, () => {
     controller.flushWindowPosition()
+  })
+
+  ipcMain.on(IpcChannels.DIALOGUE_RESPOND, (_event, payload: unknown) => {
+    if (typeof payload !== 'object' || payload === null) return
+    const response = payload as DialogueResponse
+    if (
+      typeof response.dialogueId !== 'string' ||
+      typeof response.choiceId !== 'string' ||
+      (response.reaction !== 'happy' &&
+        response.reaction !== 'annoyed' &&
+        response.reaction !== 'disappointed')
+    ) {
+      return
+    }
+    controller.clearDialogueBusy()
+  })
+
+  ipcMain.on(IpcChannels.DIALOGUE_DISMISS, (_event, dialogueId: unknown) => {
+    if (typeof dialogueId !== 'string') return
+    void dialogueId
+    controller.clearDialogueBusy()
   })
 }

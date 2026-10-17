@@ -8,6 +8,7 @@ export type CharacterState =
   | 'dragging'
   | 'happy'
   | 'sad'
+  | 'annoyed'
 
 export type WalkDirection = -1 | 1
 
@@ -34,5 +35,6 @@ export const ANIMATION_CLIP_NAMES = {
   waking: 'Wake',
   dragging: 'PickedUp',
   happy: 'Happy',
-  sad: 'Sad'
+  sad: 'Sad',
+  annoyed: 'Annoyed'
 } as const satisfies Record<CharacterState, string>

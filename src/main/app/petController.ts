@@ -1,45 +1,72 @@
-import { app, BrowserWindow, dialog } from 'electron'
+import { app, BrowserWindow, dialog, screen } from 'electron'
 import type { Tray } from 'electron'
 import { SettingsStore } from '../settings/store'
-import { createPetWindow, defaultPetWindowSize } from '../windows/petWindow'
+import {
+  createPetWindow,
+  defaultPetWindowSize,
+  isWindowPositionOffscreen
+} from '../windows/petWindow'
+import { createSettingsWindow } from '../windows/settingsWindow'
 import { clampPositionToWorkArea } from '../windows/workArea'
 import { createAppTray, refreshTrayMenu } from '../tray/createTray'
+import { ReminderScheduler } from '../reminders/ReminderScheduler'
 import { toPetRuntimeState, type AppSettings, type PetRuntimeState } from '../../shared/settings'
 import { layoutForPetSize, type PetSizeId } from '../../shared/petSize'
-import { IpcChannels, type NudgeResult } from '../../shared/ipc'
+import { IpcChannels, type DebugBehaviourCommand, type NudgeResult } from '../../shared/ipc'
+import type { DialogueEvent } from '../../shared/dialogue'
 
 /**
- * Owns desktop-pet lifecycle: window, tray, persisted settings, pause/visibility/size.
+ * Owns desktop-pet lifecycle: window, tray, persisted settings, pause/visibility/size,
+ * and Phase 3 reminder / dialogue delivery.
  */
 export class PetController {
   private readonly store = new SettingsStore()
   private petWindow: BrowserWindow | null = null
+  private settingsWindow: BrowserWindow | null = null
   private tray: Tray | null = null
   private isQuitting = false
   private positionSaveTimer: NodeJS.Timeout | null = null
   private dragActive = false
   private suppressMovePersist = false
+  private dialogueBusy = false
+  private readonly scheduler = new ReminderScheduler({
+    getStore: () => this.store,
+    isPaused: () => this.store.get().petPaused,
+    ensurePetVisible: () => this.showPet(),
+    presentDialogue: (event) => this.presentDialogue(event),
+    isDialogueBusy: () => this.dialogueBusy
+  })
 
   start(): void {
     app.on('before-quit', () => {
       this.isQuitting = true
       this.persistWindowPosition()
+      this.scheduler.stop()
     })
 
-    this.tray = createAppTray({
+    const trayActions = {
       getSettings: () => this.store.get(),
       onShowHide: () => this.toggleVisibility(),
       onPauseResume: () => this.togglePaused(),
       onToggleWalking: () => this.toggleWalking(),
-      onSetPetSize: (size) => this.setPetSize(size),
+      onToggleReminders: () => this.toggleReminders(),
+      onSetPetSize: (size: PetSizeId) => this.setPetSize(size),
       onOpenMainApp: () => this.openMainAppPlaceholder(),
-      onOpenSettings: () => this.openSettingsPlaceholder(),
-      onQuit: () => this.quit()
-    })
+      onOpenSettings: () => this.openSettings(),
+      onQuit: () => this.quit(),
+      ...(app.isPackaged
+        ? {}
+        : {
+            onTestSleep: () => this.sendDebugBehaviour('sleep'),
+            onTestWake: () => this.sendDebugBehaviour('wake')
+          })
+    }
+    this.tray = createAppTray(trayActions)
 
     this.createOrShowPetWindow()
     this.applyVisibility(this.store.get().petVisible)
     this.broadcastRuntimeState()
+    this.scheduler.start()
   }
 
   getPetWindow(): BrowserWindow | null {
@@ -89,19 +116,21 @@ export class PetController {
       prev.walkIntervalMinSec !== next.walkIntervalMinSec ||
       prev.walkIntervalMaxSec !== next.walkIntervalMaxSec ||
       prev.enableReminders !== next.enableReminders ||
-      prev.quietHours.enabled !== next.quietHours.enabled ||
-      prev.quietHours.start !== next.quietHours.start ||
-      prev.quietHours.end !== next.quietHours.end
+      JSON.stringify(prev.quietHours) !== JSON.stringify(next.quietHours) ||
+      JSON.stringify(prev.reminders) !== JSON.stringify(next.reminders)
 
     if (runtimeChanged) {
       this.broadcastRuntimeState()
     }
+
+    this.broadcastSettings()
 
     if (app.isPackaged && prev.launchAtLogin !== next.launchAtLogin) {
       app.setLoginItemSettings({ openAtLogin: next.launchAtLogin, openAsHidden: true })
     }
 
     refreshTrayMenu(this.tray, next)
+    this.scheduler.wake()
     return next
   }
 
@@ -111,6 +140,7 @@ export class PetController {
     this.applyVisibility(visible)
     refreshTrayMenu(this.tray, this.store.get())
     this.broadcastRuntimeState()
+    this.broadcastSettings()
   }
 
   togglePaused(): void {
@@ -118,6 +148,8 @@ export class PetController {
     this.store.update({ petPaused: paused })
     refreshTrayMenu(this.tray, this.store.get())
     this.broadcastRuntimeState()
+    this.broadcastSettings()
+    this.scheduler.wake()
   }
 
   toggleWalking(): void {
@@ -125,6 +157,16 @@ export class PetController {
     this.store.update({ enableWalking })
     refreshTrayMenu(this.tray, this.store.get())
     this.broadcastRuntimeState()
+    this.broadcastSettings()
+  }
+
+  toggleReminders(): void {
+    const enableReminders = !this.store.get().enableReminders
+    this.store.update({ enableReminders })
+    refreshTrayMenu(this.tray, this.store.get())
+    this.broadcastRuntimeState()
+    this.broadcastSettings()
+    this.scheduler.wake()
   }
 
   setPetSize(petSize: PetSizeId): void {
@@ -133,6 +175,7 @@ export class PetController {
     this.applyPetSize(petSize, { persistCenter: true })
     refreshTrayMenu(this.tray, this.store.get())
     this.broadcastRuntimeState()
+    this.broadcastSettings()
   }
 
   showPet(): void {
@@ -140,8 +183,10 @@ export class PetController {
       this.store.update({ petVisible: true })
     }
     this.applyVisibility(true)
+    this.ensurePetOnScreen({ reason: 'showPet' })
     refreshTrayMenu(this.tray, this.store.get())
     this.broadcastRuntimeState()
+    this.broadcastSettings()
   }
 
   /** Horizontal walk only — preserves current Y. */
@@ -167,21 +212,55 @@ export class PetController {
     })
   }
 
-  openSettingsPlaceholder(): void {
-    dialog.showMessageBox({
-      type: 'info',
-      title: 'Capy B Settings',
-      message: 'Settings',
-      detail:
-        'Use the tray for size, walking and pause.\nComing soon:\n• Reminders\n• Launch at login\n• Quiet hours'
+  openSettings(): void {
+    if (this.settingsWindow && !this.settingsWindow.isDestroyed()) {
+      this.settingsWindow.focus()
+      return
+    }
+
+    this.settingsWindow = createSettingsWindow()
+    this.settingsWindow.on('closed', () => {
+      this.settingsWindow = null
     })
+  }
+
+  presentDialogue(event: DialogueEvent): void {
+    this.dialogueBusy = true
+    this.createOrShowPetWindow()
+    const win = this.petWindow
+    if (!win || win.isDestroyed()) {
+      this.dialogueBusy = false
+      return
+    }
+    win.webContents.send(IpcChannels.DIALOGUE_SHOW, event)
+  }
+
+  /**
+   * Dev-only: ask the pet renderer to enter sleep/wake via the existing FSM.
+   * Does not touch settings or the natural sleep schedule timers in the store.
+   */
+  sendDebugBehaviour(command: DebugBehaviourCommand): void {
+    if (app.isPackaged) return
+    this.showPet()
+    const win = this.petWindow
+    if (!win || win.isDestroyed()) return
+    win.webContents.send(IpcChannels.DEBUG_BEHAVIOUR, command)
+  }
+
+  clearDialogueBusy(): void {
+    this.dialogueBusy = false
+    this.scheduler.wake()
   }
 
   quit(): void {
     this.isQuitting = true
+    this.scheduler.stop()
     this.persistWindowPosition()
     this.tray?.destroy()
     this.tray = null
+    if (this.settingsWindow && !this.settingsWindow.isDestroyed()) {
+      this.settingsWindow.close()
+    }
     app.quit()
   }
 
@@ -202,10 +281,7 @@ export class PetController {
 
     const clamped = clampPositionToWorkArea(nextX, nextY, width, height)
     this.suppressMovePersist = true
-    win.setBounds(
-      { x: clamped.x, y: clamped.y, width, height },
-      false
-    )
+    win.setBounds({ x: clamped.x, y: clamped.y, width, height }, false)
     setTimeout(() => {
       this.suppressMovePersist = false
       this.persistWindowPosition()
@@ -257,20 +333,52 @@ export class PetController {
     if (this.petWindow && !this.petWindow.isDestroyed()) return
 
     const settings = this.store.get()
+    let position = settings.windowPosition
+    if (position && isWindowPositionOffscreen(position)) {
+      console.warn(
+        '[CapyB] Saved pet position is off-screen; restoring bottom-right default.',
+        position
+      )
+      position = null
+      this.store.update({ windowPosition: null })
+    }
+
     this.petWindow = createPetWindow({
-      position: settings.windowPosition,
+      position,
       petSize: settings.petSize,
       showOnReady: false
     })
 
-    // Ensure bounds match current size preset (saved width may be stale).
     this.applyPetSize(settings.petSize, { persistCenter: false })
+
+    this.petWindow.webContents.on('did-fail-load', (_e, code, desc, url) => {
+      console.error('[CapyB] Pet renderer failed to load', { code, desc, url })
+    })
+    this.petWindow.webContents.on('render-process-gone', (_e, details) => {
+      console.error('[CapyB] Pet renderer process gone', details)
+    })
 
     this.petWindow.once('ready-to-show', () => {
       if (this.store.get().petVisible) {
+        this.ensurePetOnScreen({ reason: 'ready-to-show' })
         this.petWindow?.showInactive()
+        this.logPetWindowDiagnostics('ready-to-show')
       }
     })
+
+    // If ready-to-show already happened (or stalls), still force a visible restore.
+    setTimeout(() => {
+      if (this.isQuitting) return
+      if (!this.store.get().petVisible) return
+      const win = this.petWindow
+      if (!win || win.isDestroyed()) return
+      if (!win.isVisible()) {
+        console.warn('[CapyB] Pet window not visible after startup — forcing show')
+        this.ensurePetOnScreen({ reason: 'startup-fallback' })
+        win.showInactive()
+      }
+      this.logPetWindowDiagnostics('startup-fallback')
+    }, 1500)
 
     this.petWindow.on('close', (event) => {
       if (this.isQuitting) return
@@ -280,6 +388,7 @@ export class PetController {
       this.petWindow?.hide()
       refreshTrayMenu(this.tray, this.store.get())
       this.broadcastRuntimeState()
+      this.broadcastSettings()
     })
 
     this.petWindow.on('closed', () => {
@@ -293,6 +402,82 @@ export class PetController {
     this.petWindow.on('resized', () => this.schedulePersistPosition())
   }
 
+  /**
+   * Keep the pet inside a real work area with a nonzero size.
+   * Does not wipe unrelated settings — only corrects window bounds when needed.
+   */
+  private ensurePetOnScreen(options: { reason: string }): void {
+    const win = this.petWindow
+    if (!win || win.isDestroyed()) return
+
+    const petSize = this.store.get().petSize
+    const expected = defaultPetWindowSize(petSize)
+    const [x, y] = win.getPosition()
+    let [width, height] = win.getSize()
+
+    if (!width || !height || width < 64 || height < 64) {
+      console.warn('[CapyB] Pet window had invalid size; restoring layout size', {
+        width,
+        height,
+        reason: options.reason
+      })
+      width = expected.width
+      height = expected.height
+    }
+
+    const current = { x, y, width, height }
+    if (isWindowPositionOffscreen(current)) {
+      console.warn('[CapyB] Pet window off-screen; moving on-screen', {
+        current,
+        reason: options.reason
+      })
+      const { workArea } = screen.getPrimaryDisplay()
+      const nextX = Math.round(workArea.x + workArea.width - width - 16)
+      const nextY = Math.round(workArea.y + workArea.height - height - 16)
+      this.suppressMovePersist = true
+      win.setBounds({ x: nextX, y: nextY, width, height }, false)
+      setTimeout(() => {
+        this.suppressMovePersist = false
+        this.persistWindowPosition()
+      }, 50)
+      return
+    }
+
+    const clamped = clampPositionToWorkArea(x, y, width, height)
+    if (clamped.x !== x || clamped.y !== y || width !== expected.width || height !== expected.height) {
+      this.suppressMovePersist = true
+      win.setBounds(
+        { x: clamped.x, y: clamped.y, width: expected.width, height: expected.height },
+        false
+      )
+      setTimeout(() => {
+        this.suppressMovePersist = false
+        this.persistWindowPosition()
+      }, 50)
+    }
+  }
+
+  private logPetWindowDiagnostics(tag: string): void {
+    const win = this.petWindow
+    if (!win || win.isDestroyed()) {
+      console.warn(`[CapyB] diagnostics(${tag}): no pet window`)
+      return
+    }
+    const [x, y] = win.getPosition()
+    const [width, height] = win.getSize()
+    console.log(`[CapyB] diagnostics(${tag})`, {
+      visible: win.isVisible(),
+      destroyed: win.isDestroyed(),
+      x,
+      y,
+      width,
+      height,
+      petVisible: this.store.get().petVisible,
+      petPaused: this.store.get().petPaused,
+      url: win.webContents.getURL()
+    })
+  }
+
   private schedulePersistPosition(): void {
     if (this.positionSaveTimer) clearTimeout(this.positionSaveTimer)
     this.positionSaveTimer = setTimeout(() => this.persistWindowPosition(), 200)
@@ -304,6 +489,7 @@ export class PetController {
     if (!win || win.isDestroyed()) return
 
     if (visible) {
+      this.ensurePetOnScreen({ reason: 'applyVisibility' })
       if (!win.isVisible()) {
         win.showInactive()
       }
@@ -335,6 +521,15 @@ export class PetController {
     for (const win of BrowserWindow.getAllWindows()) {
       if (!win.isDestroyed()) {
         win.webContents.send(IpcChannels.RUNTIME_STATE_CHANGED, state)
+      }
+    }
+  }
+
+  private broadcastSettings(): void {
+    const settings = this.getSettings()
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) {
+        win.webContents.send(IpcChannels.SETTINGS_CHANGED, settings)
       }
     }
   }

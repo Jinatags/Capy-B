@@ -29,24 +29,46 @@ function defaultBottomRightPosition(width: number, height: number): { x: number;
 
 function clampToWorkArea(position: WindowPosition): { x: number; y: number } {
   const displays = screen.getAllDisplays()
-  const width = position.width
-  const height = position.height
+  const width = Math.max(1, position.width)
+  const height = Math.max(1, position.height)
 
-  const display =
-    displays.find((d) => {
-      const { x, y, width: dw, height: dh } = d.workArea
-      return (
-        position.x >= x - 8 &&
-        position.y >= y - 8 &&
-        position.x < x + dw + 8 &&
-        position.y < y + dh + 8
-      )
-    }) ?? screen.getPrimaryDisplay()
+  // Prefer the display that contains the window centre; otherwise primary.
+  const centreX = position.x + width / 2
+  const centreY = position.y + height / 2
+  const containing = displays.find((d) => {
+    const { x, y, width: dw, height: dh } = d.workArea
+    return centreX >= x && centreX < x + dw && centreY >= y && centreY < y + dh
+  })
+  const near = screen.getDisplayNearestPoint({
+    x: Math.round(centreX),
+    y: Math.round(centreY)
+  })
+  const display = containing ?? near ?? screen.getPrimaryDisplay()
 
   const { x: wx, y: wy, width: ww, height: wh } = display.workArea
-  const x = Math.min(Math.max(position.x, wx), wx + ww - width)
-  const y = Math.min(Math.max(position.y, wy), wy + wh - height)
+  // If the window cannot fit, pin to the work-area origin rather than NaN/off-screen.
+  const maxX = Math.max(wx, wx + ww - width)
+  const maxY = Math.max(wy, wy + wh - height)
+  const x = Math.min(Math.max(position.x, wx), maxX)
+  const y = Math.min(Math.max(position.y, wy), maxY)
   return { x: Math.round(x), y: Math.round(y) }
+}
+
+/** True when a saved rect has no meaningful overlap with any display work area. */
+export function isWindowPositionOffscreen(
+  position: WindowPosition,
+  margin = 32
+): boolean {
+  const width = Math.max(1, position.width)
+  const height = Math.max(1, position.height)
+  return !screen.getAllDisplays().some((d) => {
+    const { x, y, width: dw, height: dh } = d.workArea
+    const overlapW =
+      Math.min(position.x + width, x + dw) - Math.max(position.x, x)
+    const overlapH =
+      Math.min(position.y + height, y + dh) - Math.max(position.y, y)
+    return overlapW > margin && overlapH > margin
+  })
 }
 
 /**

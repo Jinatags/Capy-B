@@ -6,6 +6,7 @@ import { layoutForPetSize } from '@shared/petSize'
 import { isCapyDebug } from '../debug'
 import { CapyModel } from './CapyModel'
 import { PerfMonitor } from './PerfMonitor'
+import type { MoodRequest } from '../mood'
 
 const TARGET_FPS = 30
 const FRAME_MS = 1000 / TARGET_FPS
@@ -13,6 +14,7 @@ const FRAME_MS = 1000 / TARGET_FPS
 type PetSceneProps = {
   onPetClick: () => void
   runtime: PetRuntimeState
+  moodRequest?: MoodRequest | null
 }
 
 function FramePacer({ active }: { active: boolean }): null {
@@ -42,7 +44,11 @@ function SizedCamera({ zoom }: { zoom: number }): JSX.Element {
  * Transparent WebGL scene hosting Capy B.
  * Camera zoom tracks the selected pet size (world height 1 ≈ characterHeightPx).
  */
-export function PetScene({ onPetClick, runtime }: PetSceneProps): JSX.Element {
+export function PetScene({
+  onPetClick,
+  runtime,
+  moodRequest = null
+}: PetSceneProps): JSX.Element {
   const active = !runtime.paused && runtime.visible
   const debug = isCapyDebug()
   const layout = useMemo(() => layoutForPetSize(runtime.petSize), [runtime.petSize])
@@ -76,10 +82,16 @@ export function PetScene({ onPetClick, runtime }: PetSceneProps): JSX.Element {
       <directionalLight position={[-3, 2, -2]} intensity={0.3} color="#e8f0ff" />
       <hemisphereLight args={['#fff8f0', '#c9b8a8', 0.4]} />
 
-      <FramePacer active={active} />
+      {/* Keep pacing while the window is shown so Suspense model loads still paint. */}
+      <FramePacer active={!runtime.paused && runtime.visible} />
 
       <Suspense fallback={null}>
-        <CapyModel onPetClick={onPetClick} interactive={active} runtime={runtime} />
+        <CapyModel
+          onPetClick={onPetClick}
+          interactive={active}
+          runtime={runtime}
+          moodRequest={moodRequest}
+        />
       </Suspense>
 
       {debug ? <PerfMonitor /> : null}

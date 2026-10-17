@@ -3,7 +3,7 @@ import type { CharacterState } from '@shared/character'
 import { mapClipsToStates } from './clipMap'
 
 const DEFAULT_FADE_SEC = 0.35
-const ONE_SHOT_STATES = new Set<CharacterState>(['waking', 'happy', 'sad'])
+const ONE_SHOT_STATES = new Set<CharacterState>(['waking', 'happy', 'sad', 'annoyed'])
 
 export type AnimationControllerOptions = {
   /** Crossfade duration in seconds. */

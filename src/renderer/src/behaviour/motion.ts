@@ -136,6 +136,14 @@ export function computeMotionPose(
       pose.scale.z = 1 + 0.012 * dip
       break
     }
+    case 'annoyed': {
+      const shake = Math.sin(clockSec * 14) * (1 - snapshot.stateProgress)
+      pose.rotation.z = shake * 0.08 * amp
+      pose.position.x = shake * 0.012 * amp
+      pose.rotation.y = IDLE_YAW
+      pose.scale.y = 1 - 0.015 * amp
+      break
+    }
     default:
       break
   }
@@ -170,6 +178,7 @@ function applySkeletalRootAccent(
     case 'waking':
     case 'happy':
     case 'sad':
+    case 'annoyed':
       pose.rotation.y = IDLE_YAW
       pose.position.y = breath
       break

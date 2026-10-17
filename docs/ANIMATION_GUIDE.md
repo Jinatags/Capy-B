@@ -141,6 +141,11 @@ Blink / smile shapekeys are welcome (`Blink`, `Smile`) but not required. The cur
 1. Place `public/models/CapyB_Animated.glb` next to the static model.
 2. Run `npm run dev`.
 3. Confirm the console (dev / `?debug=1`) does **not** warn about falling back.
+
+> **Dev-server note:** Vite’s SPA fallback returns HTTP 200 + `text/html` for missing files.
+> The app therefore validates Content-Type / `glTF` magic bytes before treating
+> `CapyB_Animated.glb` as present. A bare `fetch().ok` check is not enough.
+
 4. Missing individual clips log as:
 
    `[CapyB] Missing animation clips for states: …`
@@ -178,3 +183,7 @@ Blink / smile shapekeys are welcome (`Blink`, `Smile`) but not required. The cur
 ---
 
 When `CapyB_Animated.glb` is ready, drop it into `public/models/` and relaunch. No code change is required if clip names follow this guide.
+
+### Mood clips (Phase 3)
+
+In addition to the table above, the app also maps an optional `Annoyed` clip for reminder “hmph” reactions. If missing, a short procedural shake is used.

@@ -86,12 +86,23 @@ export class CharacterStateMachine {
   }
 
   /**
-   * Soft sad reaction for future habit-tracker hooks.
-   * Does not open any habit UI on its own.
+   * Soft sad / disappointed reaction (habit or dialogue).
    */
   beginSad(durationSec = 2.0): void {
     if (this.state === 'dragging') return
     this.enter('sad', durationSec)
+  }
+
+  /** Mild annoyed shake when the user stalls on a reminder. */
+  beginAnnoyed(durationSec = 1.4): void {
+    if (this.state === 'dragging') return
+    this.enter('annoyed', durationSec)
+  }
+
+  applyMood(mood: 'happy' | 'sad' | 'annoyed'): void {
+    if (mood === 'happy') this.beginHappy(1.6)
+    else if (mood === 'sad') this.beginSad(2.0)
+    else this.beginAnnoyed(1.4)
   }
 
   /** @deprecated Prefer {@link beginHappy} — kept as a thin alias for call sites. */
@@ -106,6 +117,25 @@ export class CharacterStateMachine {
     this.stateDuration = Math.min(this.stateDuration, this.stateTime + 1.2)
   }
 
+  /**
+   * Dev / test helper — enter the normal sleep state immediately.
+   * Uses the same duration range as the idle timer (7–14s). Does not change
+   * persisted settings; the next natural sleep is still scheduled after wake.
+   */
+  beginSleep(durationSec = randRange(7, 14)): void {
+    if (this.state === 'dragging') return
+    this.enter('sleeping', durationSec)
+  }
+
+  /**
+   * Dev / test helper — run the normal wake transition immediately.
+   * Same 1.8s waking state used when sleep finishes on its own.
+   */
+  beginWake(durationSec = 1.8): void {
+    if (this.state === 'dragging') return
+    this.enter('waking', durationSec)
+  }
+
   update(dt: number, paused: boolean): MachineSnapshot {
     if (paused) {
       return this.getSnapshot()
@@ -117,7 +147,7 @@ export class CharacterStateMachine {
       return this.getSnapshot()
     }
 
-    if (this.state === 'happy' || this.state === 'sad') {
+    if (this.state === 'happy' || this.state === 'sad' || this.state === 'annoyed') {
       if (this.stateTime >= this.stateDuration) {
         this.enter('idle', Number.POSITIVE_INFINITY)
         this.scheduleNextWalk()
