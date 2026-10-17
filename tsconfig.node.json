@@ -22,5 +22,6 @@
     "src/main/**/*",
     "src/preload/**/*",
     "src/shared/**/*"
-  ]
+  ],
+  "exclude": ["src/shared/**/*.test.ts"]
 }
