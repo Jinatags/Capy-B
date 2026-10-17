@@ -20,8 +20,8 @@ function randRange(min: number, max: number): number {
 }
 
 /**
- * Lightweight finite-state machine driving idle / walk / sleep cycles.
- * Procedural only — no skeletal clips.
+ * Lightweight finite-state machine driving idle / walk / sleep / mood cycles.
+ * Works with either skeletal clips or procedural root poses.
  */
 export class CharacterStateMachine {
   private state: CharacterState = 'idle'
@@ -39,7 +39,7 @@ export class CharacterStateMachine {
     walkIntervalMaxSec: 36
   }
 
-  /** Brief look-around yaw offset for idle (whole-body, no head bone). */
+  /** Brief look-around yaw offset for idle (whole-body when unrigged). */
   get idleLookYaw(): number {
     return this.lookYaw
   }
@@ -76,17 +76,33 @@ export class CharacterStateMachine {
     }
   }
 
-  /** Click / speech interaction — pauses autonomous movement briefly. */
-  beginInteraction(durationSec = 2.4): void {
+  /**
+   * Positive interaction (click / future praise).
+   * Plays a short happy bounce, then returns to idle.
+   */
+  beginHappy(durationSec = 1.6): void {
     if (this.state === 'dragging') return
-    this.enter('interacting', durationSec)
+    this.enter('happy', durationSec)
+  }
+
+  /**
+   * Soft sad reaction for future habit-tracker hooks.
+   * Does not open any habit UI on its own.
+   */
+  beginSad(durationSec = 2.0): void {
+    if (this.state === 'dragging') return
+    this.enter('sad', durationSec)
+  }
+
+  /** @deprecated Prefer {@link beginHappy} — kept as a thin alias for call sites. */
+  beginInteraction(durationSec = 1.6): void {
+    this.beginHappy(durationSec)
   }
 
   /** Edge of screen while walking — reverse or settle. */
   notifyWalkBlocked(): void {
     if (this.state !== 'walking') return
     this.walkDirection = (this.walkDirection === 1 ? -1 : 1) as WalkDirection
-    // Short remaining stroll the other way, then idle.
     this.stateDuration = Math.min(this.stateDuration, this.stateTime + 1.2)
   }
 
@@ -101,7 +117,7 @@ export class CharacterStateMachine {
       return this.getSnapshot()
     }
 
-    if (this.state === 'interacting') {
+    if (this.state === 'happy' || this.state === 'sad') {
       if (this.stateTime >= this.stateDuration) {
         this.enter('idle', Number.POSITIVE_INFINITY)
         this.scheduleNextWalk()
@@ -119,7 +135,7 @@ export class CharacterStateMachine {
 
     if (this.state === 'sleeping') {
       if (this.stateTime >= this.stateDuration) {
-        this.enter('waking', 1.6)
+        this.enter('waking', 1.8)
       }
       return this.getSnapshot()
     }
@@ -156,8 +172,8 @@ export class CharacterStateMachine {
     this.lookTimer -= dt
     if (this.lookTimer <= 0) {
       this.lookTimer = randRange(3.5, 8)
-      // Tiny yaw peek — whole mesh only (no separate head).
-      this.lookYaw = (Math.random() - 0.5) * 0.18
+      // Tiny yaw peek — whole mesh only when no head bone.
+      this.lookYaw = (Math.random() - 0.5) * 0.14
     } else {
       this.lookYaw *= 1 - Math.min(1, dt * 0.35)
     }

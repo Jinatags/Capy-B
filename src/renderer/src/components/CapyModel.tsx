@@ -1,17 +1,28 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, type JSX } from 'react'
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type JSX
+} from 'react'
 import { Center, useGLTF } from '@react-three/drei'
 import { useFrame, useThree, type ThreeEvent } from '@react-three/fiber'
 import * as THREE from 'three'
 import type { PetRuntimeState } from '@shared/settings'
 import { layoutForPetSize } from '@shared/petSize'
+import { AnimationController } from '../animation/AnimationController'
+import { isUsableAnimatedGltf } from '../animation/clipMap'
+import {
+  ANIMATED_MODEL_URL,
+  FALLBACK_MODEL_URL,
+  resolveCapyModelUrl,
+  type ResolvedCapyModel
+} from '../animation/modelUrls'
 import { CharacterStateMachine } from '../behaviour/stateMachine'
 import { computeMotionPose } from '../behaviour/motion'
+import { isCapyDebug } from '../debug'
 
-/**
- * Single-character extract from the Meshy turnaround bake.
- * Original fused asset kept at `public/models/CapyB.glb` (+ `.original.glb` backup).
- */
-const MODEL_URL = '/models/CapyB_Single.glb'
 const DRAG_THRESHOLD_PX = 7
 
 type CapyModelProps = {
@@ -20,16 +31,105 @@ type CapyModelProps = {
   runtime: PetRuntimeState
 }
 
+function sceneHasSkeleton(root: THREE.Object3D): boolean {
+  let found = false
+  root.traverse((obj) => {
+    if (found) return
+    if ((obj as THREE.SkinnedMesh).isSkinnedMesh || (obj as THREE.Bone).isBone) {
+      found = true
+    }
+  })
+  return found
+}
+
+function prepareMaterials(scene: THREE.Object3D): void {
+  scene.traverse((child) => {
+    if (!(child instanceof THREE.Mesh)) return
+
+    child.castShadow = false
+    child.receiveShadow = false
+
+    const materials = Array.isArray(child.material) ? child.material : [child.material]
+    for (const mat of materials) {
+      if (!(mat instanceof THREE.MeshStandardMaterial)) continue
+
+      mat.metalness = 0.05
+      mat.roughness = 0.85
+      mat.side = THREE.DoubleSide
+      mat.envMapIntensity = 0.25
+
+      if (mat.map) {
+        mat.map.colorSpace = THREE.SRGBColorSpace
+        mat.map.needsUpdate = true
+      }
+
+      mat.needsUpdate = true
+    }
+  })
+}
+
 /**
- * Loads the static Capy B GLB and drives Phase 2A procedural behaviour.
- * Model is normalised to world-height ≈ 1 so camera zoom maps 1:1 to CSS px height.
+ * Resolves animated vs static model URL, then mounts the character.
+ * Avoids loading both GLBs unless the animated candidate is invalid.
  */
-export function CapyModel({
+export function CapyModel(props: CapyModelProps): JSX.Element | null {
+  const [resolved, setResolved] = useState<ResolvedCapyModel | null>(null)
+  const [forcedFallback, setForcedFallback] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    void resolveCapyModelUrl().then((next) => {
+      if (cancelled) return
+      // Preload only the chosen URL so we do not fetch both GLBs.
+      useGLTF.preload(next.url)
+      setResolved(next)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  if (!resolved) return null
+
+  const model: ResolvedCapyModel = forcedFallback
+    ? { url: FALLBACK_MODEL_URL, kind: 'static' }
+    : resolved
+
+  return (
+    <CapyModelLoaded
+      key={model.url}
+      {...props}
+      model={model}
+      onAnimatedInvalid={() => {
+        if (import.meta.env.DEV || isCapyDebug()) {
+          console.warn(
+            `[CapyB] ${ANIMATED_MODEL_URL} is present but has no skeleton/clips — falling back to ${FALLBACK_MODEL_URL}`
+          )
+        }
+        useGLTF.preload(FALLBACK_MODEL_URL)
+        setForcedFallback(true)
+      }}
+    />
+  )
+}
+
+type LoadedProps = CapyModelProps & {
+  model: ResolvedCapyModel
+  onAnimatedInvalid: () => void
+}
+
+/**
+ * Loads one Capy B GLB and drives skeletal clips (when present) + procedural root motion.
+ */
+function CapyModelLoaded({
   onPetClick,
   interactive = true,
-  runtime
-}: CapyModelProps): JSX.Element {
-  const { scene } = useGLTF(MODEL_URL)
+  runtime,
+  model,
+  onAnimatedInvalid
+}: LoadedProps): JSX.Element {
+  const gltf = useGLTF(model.url)
+  const { scene, animations } = gltf
   const { gl, invalidate } = useThree()
   const layout = layoutForPetSize(runtime.petSize)
 
@@ -39,13 +139,19 @@ export function CapyModel({
     machineRef.current = new CharacterStateMachine()
   }
 
+  const animRef = useRef<AnimationController | null>(null)
+  if (!animRef.current) {
+    animRef.current = new AnimationController()
+  }
+
   const pendingDx = useRef(0)
   const nudgeInFlight = useRef(false)
   const wasWalking = useRef(false)
+  const lastAnimState = useRef<string | null>(null)
+  const invalidChecked = useRef(false)
   const pointerDownRef = useRef<{
     x: number
     y: number
-    /** Offset from window top-left to the grab point (CSS px). */
     grabX: number
     grabY: number
     dragging: boolean
@@ -59,32 +165,44 @@ export function CapyModel({
     return 1 / height
   }, [scene])
 
+  const hasSkeleton = useMemo(() => sceneHasSkeleton(scene), [scene])
+
   useLayoutEffect(() => {
-    scene.traverse((child) => {
-      if (!(child instanceof THREE.Mesh)) return
-
-      child.castShadow = false
-      child.receiveShadow = false
-
-      const materials = Array.isArray(child.material) ? child.material : [child.material]
-      for (const mat of materials) {
-        if (!(mat instanceof THREE.MeshStandardMaterial)) continue
-
-        mat.metalness = 0.05
-        mat.roughness = 0.85
-        mat.side = THREE.DoubleSide
-        mat.envMapIntensity = 0.25
-
-        if (mat.map) {
-          mat.map.colorSpace = THREE.SRGBColorSpace
-          mat.map.needsUpdate = true
-        }
-
-        mat.needsUpdate = true
-      }
-    })
+    prepareMaterials(scene)
     invalidate()
   }, [scene, invalidate])
+
+  // Validate animated candidate once; fall back without keeping a broken asset.
+  useEffect(() => {
+    if (invalidChecked.current) return
+    invalidChecked.current = true
+    if (model.kind !== 'animated') return
+
+    const usable = isUsableAnimatedGltf({
+      animations,
+      hasSkeleton
+    })
+    if (!usable) {
+      onAnimatedInvalid()
+    }
+  }, [model.kind, animations, hasSkeleton, onAnimatedInvalid])
+
+  // Bind mixer to the GLTF scene (skeleton owner), not the outer pose group.
+  useEffect(() => {
+    const controller = animRef.current
+    if (!controller) return
+
+    controller.bind(scene, animations)
+    if (controller.hasClips) {
+      controller.play('idle')
+      lastAnimState.current = 'idle'
+    }
+
+    return () => {
+      controller.dispose()
+      lastAnimState.current = null
+    }
+  }, [scene, animations])
 
   useEffect(() => {
     machineRef.current?.setConfig({
@@ -104,15 +222,32 @@ export function CapyModel({
     invalidate()
   }, [runtime.petSize, invalidate])
 
+  useEffect(() => {
+    animRef.current?.setPaused(runtime.paused || !runtime.visible)
+  }, [runtime.paused, runtime.visible])
+
   useFrame((state, delta) => {
     const machine = machineRef.current
     const root = rootRef.current
+    const anim = animRef.current
     if (!machine || !root) return
 
     const dt = Math.min(0.05, Math.max(0, delta))
     const paused = runtime.paused || !runtime.visible
     const snapshot = machine.update(dt, paused)
-    const pose = computeMotionPose(snapshot, machine, state.clock.elapsedTime)
+    const skeletalActive = Boolean(anim?.hasClips)
+
+    if (anim) {
+      if (!paused && skeletalActive && lastAnimState.current !== snapshot.state) {
+        anim.play(snapshot.state)
+        lastAnimState.current = snapshot.state
+      }
+      anim.update(paused ? 0 : dt)
+    }
+
+    const pose = computeMotionPose(snapshot, machine, state.clock.elapsedTime, {
+      skeletalActive
+    })
 
     root.position.set(
       pose.position.x,
@@ -199,7 +334,6 @@ export function CapyModel({
 
     if (down.dragging) {
       event.stopPropagation()
-      // Anchor: window top-left so the grab point stays under the cursor.
       const x = Math.round(event.nativeEvent.screenX - down.grabX)
       const y = Math.round(event.nativeEvent.screenY - down.grabY)
       window.pet?.moveWindowLive(x, y)
@@ -225,7 +359,7 @@ export function CapyModel({
     }
 
     if (wasClickCandidate && down && interactive && !runtime.paused) {
-      machineRef.current?.beginInteraction(2.4)
+      machineRef.current?.beginHappy(1.6)
       onPetClick()
     }
   }
@@ -256,5 +390,3 @@ export function CapyModel({
     </group>
   )
 }
-
-useGLTF.preload(MODEL_URL)

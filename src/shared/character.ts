@@ -1,4 +1,4 @@
-/** Central character behaviour states for Phase 2A procedural motion. */
+/** Central character behaviour states and motion types. */
 
 export type CharacterState =
   | 'idle'
@@ -6,7 +6,8 @@ export type CharacterState =
   | 'sleeping'
   | 'waking'
   | 'dragging'
-  | 'interacting'
+  | 'happy'
+  | 'sad'
 
 export type WalkDirection = -1 | 1
 
@@ -19,4 +20,19 @@ export type MotionPose = {
   scale: { x: number; y: number; z: number }
 }
 
+/** Default facing when idle (slight three-quarter view). */
 export const IDLE_YAW = -Math.PI / 5
+
+/**
+ * Canonical clip names expected in `CapyB_Animated.glb`.
+ * Matching is case-insensitive and also accepts common aliases.
+ */
+export const ANIMATION_CLIP_NAMES = {
+  idle: 'Idle',
+  walking: 'Walk',
+  sleeping: 'Sleep',
+  waking: 'Wake',
+  dragging: 'PickedUp',
+  happy: 'Happy',
+  sad: 'Sad'
+} as const satisfies Record<CharacterState, string>
