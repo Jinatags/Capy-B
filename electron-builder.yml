@@ -1,0 +1,32 @@
+appId: com.capyb.desktop
+productName: Capy B
+copyright: Copyright © Capy B
+directories:
+  output: release
+  buildResources: resources
+files:
+  - out/**/*
+  - package.json
+extraResources:
+  - from: resources/tray
+    to: tray
+    filter:
+      - '**/*'
+mac:
+  category: public.app-category.lifestyle
+  target:
+    - target: dmg
+      arch:
+        - arm64
+        - x64
+    - target: dir
+      arch:
+        - arm64
+  # Unsigned local builds are fine for development packaging.
+  identity: null
+  hardenedRuntime: false
+  gatekeeperAssess: false
+  # App icon (optional until a proper .icns is added under resources/).
+  # icon: resources/icon.icns
+dmg:
+  artifactName: ${productName}-${version}-${arch}.${ext}

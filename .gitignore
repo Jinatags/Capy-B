@@ -137,10 +137,47 @@ dist
 !.yarn/sdks
 !.yarn/versions
 
-# Vite files
+# Vite / electron-vite
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+out/
+dist/
+release/
+
+# Local GLB inspection artefacts
+public/models/_inspect/
+public/models/_inspect_*
+
+# Keep fused Meshy bake + backups local only (runtime asset is CapyB_Single.glb)
+public/models/CapyB.glb
+public/models/CapyB.original.glb
+public/models/*.bak
+public/models/_*
+
+# Personal concept art / Meshy reference inputs (keep local)
+references/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+logs/
+*.log
+
+# macOS
+.DS_Store
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local Electron user data copies (if ever placed in-repo)
+.capy-local/
 
 # Astro generated types
 .astro/
